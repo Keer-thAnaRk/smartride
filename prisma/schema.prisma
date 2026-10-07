@@ -1,0 +1,857 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String    @id @default(cuid())
+  email        String    @unique
+  passwordHash String
+  name         String
+  phone        String?
+  role         String    @default("COMMUTER") // COMMUTER, DRIVER, ADMIN
+  avatar       String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  commuterProfile CommuterProfile?
+  driverProfile   DriverProfile?
+  subscriptions   Subscription[]
+  payments        Payment[]
+  attendances     Attendance[]
+  notifications   Notification[]
+  gamificationProfile GamificationProfile?
+}
+
+model CommuterProfile {
+  id                   String   @id @default(cuid())
+  userId               String   @unique
+  user                 User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  defaultPickupAddress String?
+  defaultPickupLat     Float?
+  defaultPickupLng     Float?
+  defaultDropAddress   String?
+  defaultDropLat       Float?
+  defaultDropLng       Float?
+  morningPickupTime    String?  @default("08:30 AM")
+  eveningDropTime      String?  @default("06:00 PM")
+  emergencyContact     String?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+}
+
+model DriverProfile {
+  id              String       @id @default(cuid())
+  userId          String       @unique
+  user            User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  licenseNumber   String?
+  experienceYears Int          @default(3)
+  rating          Float        @default(4.9)
+  isVerified      Boolean      @default(false)
+  status          String       @default("AVAILABLE") // OFFLINE, AVAILABLE, ON_TRIP
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  vehicles        Vehicle[]
+  routes          Route[]
+  trips           Trip[]
+  attendances     Attendance[]
+  payouts         Payout[]
+  leaveRequests   LeaveRequest[] @relation("DriverLeaves")
+  substituteLeaves LeaveRequest[] @relation("ReplacementDriverLeaves")
+}
+
+model Vehicle {
+  id              String        @id @default(cuid())
+  driverId        String
+  driver          DriverProfile @relation(fields: [driverId], references: [id], onDelete: Cascade)
+  make            String
+  model           String
+  year            Int
+  licensePlate    String        @unique
+  capacity        Int           @default(4)
+  type            String        @default("SEDAN") // SEDAN, SUV, VAN, MINI_BUS
+  isApproved      Boolean       @default(false)
+  rcDocUrl        String?
+  insuranceDocUrl String?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  routes          Route[]
+}
+
+model Route {
+  id               String         @id @default(cuid())
+  name             String
+  code             String         @unique
+  origin           String
+  destination      String
+  waypoints        String         // JSON string array of stops
+  morningStartTime String         @default("08:00 AM")
+  eveningStartTime String         @default("06:00 PM")
+  distanceKm       Float          @default(18.5)
+  estimatedMinutes Int            @default(45)
+  status           String         @default("ACTIVE") // ACTIVE, INACTIVE
+  assignedDriverId String?
+  assignedDriver   DriverProfile? @relation(fields: [assignedDriverId], references: [id], onDelete: SetNull)
+  assignedVehicleId String?
+  assignedVehicle  Vehicle?       @relation(fields: [assignedVehicleId], references: [id], onDelete: SetNull)
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  subscriptions    Subscription[]
+  trips            Trip[]
+  attendances      Attendance[]
+  leaveRequests    LeaveRequest[]
+  aiPredictions    AIDemandPrediction[]
+}
+
+model SubscriptionPlan {
+  id              String         @id @default(cuid())
+  name            String
+  billingCycle    String         // MONTHLY, QUARTERLY, YEARLY
+  durationMonths  Int            @default(1)
+  price           Float
+  discountPercent Float          @default(0)
+  description     String
+  features        String         // JSON string array of features
+  isPopular       Boolean        @default(false)
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  subscriptions   Subscription[]
+}
+
+model Subscription {
+  id                String           @id @default(cuid())
+  commuterId        String
+  commuter          User             @relation(fields: [commuterId], references: [id], onDelete: Cascade)
+  planId            String
+  plan              SubscriptionPlan @relation(fields: [planId], references: [id])
+  routeId           String
+  route             Route            @relation(fields: [routeId], references: [id])
+  status            String           @default("ACTIVE") // ACTIVE, PENDING, PAUSED, CANCELLED, EXPIRED
+  startDate         DateTime         @default(now())
+  endDate           DateTime
+  morningPickupTime String           @default("08:30 AM")
+  eveningPickupTime String           @default("06:00 PM")
+  pickupAddress     String
+  dropAddress       String
+  seatNumber        Int?             @default(1)
+  autoRenew         Boolean          @default(true)
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+
+  payments          Payment[]
+}
+
+model Payment {
+  id             String        @id @default(cuid())
+  subscriptionId String?
+  subscription   Subscription? @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
+  commuterId     String
+  commuter       User          @relation(fields: [commuterId], references: [id], onDelete: Cascade)
+  amount         Float
+  currency       String        @default("USD")
+  status         String        @default("SUCCEEDED") // SUCCEEDED, PENDING, FAILED, REFUNDED
+  paymentMethod  String        @default("CARD") // CARD, UPI, NETBANKING, WALLET
+  transactionId  String        @unique
+  invoiceNumber  String        @unique
+  receiptUrl     String?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+}
+
+model Trip {
+  id          String        @id @default(cuid())
+  routeId     String
+  route       Route         @relation(fields: [routeId], references: [id], onDelete: Cascade)
+  driverId    String
+  driver      DriverProfile @relation(fields: [driverId], references: [id], onDelete: Cascade)
+  date        String        // YYYY-MM-DD
+  tripType    String        // MORNING_PICKUP, EVENING_DROP
+  status      String        @default("PLANNED") // PLANNED, IN_PROGRESS, COMPLETED, CANCELLED
+  startedAt   DateTime?
+  completedAt DateTime?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+}
+
+model Attendance {
+  id          String        @id @default(cuid())
+  commuterId  String
+  commuter    User          @relation(fields: [commuterId], references: [id], onDelete: Cascade)
+  driverId    String?
+  driver      DriverProfile? @relation(fields: [driverId], references: [id], onDelete: SetNull)
+  routeId     String
+  route       Route         @relation(fields: [routeId], references: [id], onDelete: Cascade)
+  date        String        // YYYY-MM-DD
+  tripType    String        // MORNING_PICKUP, EVENING_DROP
+  status      String        @default("SCHEDULED") // SCHEDULED, BOARDED, COMPLETED, ABSENT, SKIPPED
+  notes       String?
+  markedAt    DateTime?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  @@unique([commuterId, date, tripType])
+}
+
+model Payout {
+  id          String        @id @default(cuid())
+  driverId    String
+  driver      DriverProfile @relation(fields: [driverId], references: [id], onDelete: Cascade)
+  amount      Float
+  periodStart DateTime
+  periodEnd   DateTime
+  status      String        @default("PROCESSED") // PENDING, PROCESSED
+  reference   String
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+}
+
+model LeaveRequest {
+  id                    String        @id @default(cuid())
+  driverId              String
+  driver                DriverProfile @relation("DriverLeaves", fields: [driverId], references: [id], onDelete: Cascade)
+  assignedRouteId       String?
+  assignedRoute         Route?        @relation(fields: [assignedRouteId], references: [id], onDelete: SetNull)
+  startDate             String        // YYYY-MM-DD
+  endDate               String        // YYYY-MM-DD
+  reason                String
+  status                String        @default("pending") // pending, approved, rejected
+  replacementDriverId   String?
+  replacementDriver     DriverProfile? @relation("ReplacementDriverLeaves", fields: [replacementDriverId], references: [id], onDelete: SetNull)
+  replacementDriverName String?
+  appliedAt             DateTime      @default(now())
+  reviewedAt            DateTime?
+  createdAt             DateTime      @default(now())
+  updatedAt             DateTime      @updatedAt
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title     String
+  message   String
+  type      String   @default("INFO") // INFO, WARNING, SUCCESS
+  read      Boolean  @default(false)
+  createdAt DateTime @default(now())
+}
+
+model AIDemandPrediction {
+  id                 String   @id @default(cuid())
+  routeId            String
+  route              Route    @relation(fields: [routeId], references: [id], onDelete: Cascade)
+  shift              String   // MORNING_PICKUP, EVENING_DROP
+  predictionDate     String   // YYYY-MM-DD
+  predictedDemand    Float
+  vehicleCapacity    Int
+  predictedOccupancy Float
+  status             String   // LOW, NORMAL, HIGH, CRITICAL
+  recommendation     String
+  reliability        String   // HIGH, MEDIUM, LOW
+  additionalShuttles Int      @default(0)
+  featureImportance  String?  // JSON string of feature importances
+  createdAt          DateTime @default(now())
+}
+
+model AIModelRun {
+  id              String   @id @default(cuid())
+  modelName       String
+  trainingRecords Int
+  mae             Float
+  rmse            Float
+  r2              Float
+  trainedAt       DateTime @default(now())
+  features        String?  // JSON string of feature metrics
+}
+
+model TripSafetyScore {
+  id                      String   @id @default(cuid())
+  tripId                  String
+  score                   Int      @default(100)
+  riskLevel               String   @default("LOW") // LOW, MODERATE, HIGH, CRITICAL
+  driverVerificationScore Int      @default(20)
+  vehicleDocumentScore    Int      @default(15)
+  otpScore                Int      @default(15)
+  routeComplianceScore    Int      @default(20)
+  speedScore              Int      @default(15)
+  emergencyScore          Int      @default(15)
+  primaryReason           String?
+  calculatedAt            DateTime @default(now())
+
+  events                  SafetyEvent[]
+}
+
+model SafetyEvent {
+  id               String           @id @default(cuid())
+  tripId           String
+  vehicleId        String?
+  driverId         String?
+  safetyScoreId    String?
+  safetyScore      TripSafetyScore? @relation(fields: [safetyScoreId], references: [id], onDelete: SetNull)
+  type             String           // ROUTE_DEVIATION, SPEED_ANOMALY, LONG_STOP, GPS_SIGNAL_LOSS, UNEXPECTED_TRIP_START, MULTIPLE_OTP_FAILURES, MULTI_SIGNAL_ANOMALY
+  severity         String           // INFO, WARNING, MEDIUM, HIGH, CRITICAL
+  status           String           @default("ACTIVE") // ACTIVE, ACKNOWLEDGED, INVESTIGATING, RESOLVED, DISMISSED
+  title            String
+  description      String
+  metadata         String?          // JSON string of event metadata
+  detectedAt       DateTime         @default(now())
+  acknowledgedAt   DateTime?
+  acknowledgedBy   String?
+  investigatingAt  DateTime?
+  investigatingBy  String?
+  resolvedAt       DateTime?
+  resolvedBy       String?
+  resolutionReason String?
+  resolutionNote   String?
+}
+
+model SecurityAuditLog {
+  id        String   @id @default(cuid())
+  action    String   // ANOMALY_DETECTED, ADMIN_ACKNOWLEDGED, ADMIN_INVESTIGATING, ANOMALY_RESOLVED, ANOMALY_DISMISSED, SIMULATION_TRIGGERED
+  tripId    String?
+  eventId   String?
+  actorId   String
+  actorName String
+  details   String
+  metadata  String?
+  timestamp DateTime @default(now())
+}
+
+model FamilyTrackingSession {
+  id                    String               @id @default(cuid())
+  tripId                String
+  commuterId            String
+  shareTokenHash        String               @unique
+  shareTokenPrefix      String               // First 8 chars for identification/indexing
+  destinationStop       String               // e.g. "Bellandur EcoSpace Flyover"
+  destinationLat        Float
+  destinationLng        Float
+  status                String               @default("ACTIVE") // ACTIVE, ARRIVED, EXPIRED
+  isArrived             Boolean              @default(false)
+  arrivedAt             DateTime?
+  scheduledArrival      String?              // e.g. "08:25 AM"
+  delayMinutesAtArrival Int?
+  expiresAt             DateTime
+  createdAt             DateTime             @default(now())
+  updatedAt             DateTime             @updatedAt
+
+  notifications         FamilyNotification[]
+
+  @@index([tripId])
+  @@index([commuterId])
+}
+
+model FamilyNotification {
+  id            String                 @id @default(cuid())
+  sessionId     String?
+  session       FamilyTrackingSession? @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  tripId        String
+  commuterId    String
+  commuterName  String                 // e.g. "Rahul Verma"
+  type          String                 // SAFE_ARRIVAL, COMMUTE_DELAY
+  delayCategory String?                // ON_TIME, MINOR_DELAY, SIGNIFICANT_DELAY, MAJOR_DELAY, ARRIVED
+  title         String
+  message       String
+  destination   String
+  delayMinutes  Int                    @default(0)
+  eta           String?
+  lastLocation  String?
+  deliveredAt   DateTime               @default(now())
+  createdAt     DateTime               @default(now())
+
+  @@index([commuterId])
+  @@index([tripId])
+}
+
+model SeatOptimizationRun {
+  id                  String                   @id @default(cuid())
+  routeId             String
+  tripId              String?
+  vehicleId           String?
+  status              String                   @default("PREVIEWED") // PREVIEWED, APPLIED, DISMISSED
+  beforeUtilization   Float
+  afterUtilization    Float
+  beforeFragmentation Float
+  afterFragmentation  Float
+  improvementPercent  Float
+  reassignmentsCount  Int                      @default(0)
+  objectiveCostBefore Float
+  objectiveCostAfter  Float
+  checksum            String
+  appliedAt           DateTime?
+  appliedBy           String?
+  createdAt           DateTime                 @default(now())
+
+  changes             SeatOptimizationChange[]
+
+  @@index([routeId])
+  @@index([tripId])
+}
+
+model SeatOptimizationChange {
+  id             String              @id @default(cuid())
+  runId          String
+  run            SeatOptimizationRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  subscriptionId String?
+  commuterId     String
+  commuterName   String
+  pickupStop     String
+  dropStop       String
+  previousSeat   Int
+  newSeat        Int
+  reason         String
+
+  @@index([runId])
+}
+
+model DriverCheckIn {
+  id                String    @id @default(cuid())
+  tripId            String
+  routeId           String
+  driverId          String
+  driverName        String
+  scheduledDispatch String    // e.g. "08:00 AM"
+  checkInDeadline   String    // e.g. "07:45 AM"
+  status            String    @default("EXPECTED") // EXPECTED, CHECKED_IN, LATE, NO_SHOW_RISK, NO_SHOW_CONFIRMED, REPLACED, PRIMARY_RETURNED
+  checkedInAt       DateTime?
+  date              String    // YYYY-MM-DD
+  tripType          String    @default("MORNING_PICKUP") // MORNING_PICKUP, EVENING_DROP
+  notes             String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  coverageEvents    DriverCoverageEvent[]
+
+  @@unique([tripId, driverId, date, tripType])
+  @@index([routeId])
+  @@index([driverId])
+  @@index([status])
+  @@index([date])
+}
+
+model DriverCoverageEvent {
+  id                    String         @id @default(cuid())
+  tripId                String
+  routeId               String
+  checkInId             String?
+  checkIn               DriverCheckIn? @relation(fields: [checkInId], references: [id], onDelete: SetNull)
+  primaryDriverId       String
+  primaryDriverName     String
+  replacementDriverId   String?
+  replacementDriverName String?
+  status                String         @default("NO_SHOW_RISK") // NO_SHOW_RISK, NO_SHOW_CONFIRMED, REPLACED, RESOLVED, CANCELLED
+  suitabilityScore      Float?
+  noShowReason          String?
+  dispatchDelayMinutes  Int            @default(0)
+  detectedAt            DateTime       @default(now())
+  resolvedAt            DateTime?
+  resolvedBy            String?
+  createdAt             DateTime       @default(now())
+  updatedAt             DateTime       @updatedAt
+
+  auditLogs             CoverageAuditLog[]
+
+  @@index([tripId])
+  @@index([routeId])
+  @@index([status])
+}
+
+model CoverageAuditLog {
+  id                  String               @id @default(cuid())
+  coverageEventId     String?
+  coverageEvent       DriverCoverageEvent? @relation(fields: [coverageEventId], references: [id], onDelete: Cascade)
+  tripId              String
+  routeId             String
+  action              String               // NO_SHOW_DETECTED, STANDBY_RECOMMENDED, REPLACEMENT_ASSIGNED, PRIMARY_CHECKED_IN_LATE, REPLACEMENT_CANCELLED
+  actorId             String
+  actorName           String
+  primaryDriverId     String
+  replacementDriverId String?
+  suitabilityScore    Float?
+  candidatesEvaluated String?              // JSON string of evaluated candidate drivers & scores
+  justification       String
+  timestamp           DateTime             @default(now())
+
+  @@index([tripId])
+  @@index([coverageEventId])
+}
+
+model SustainabilityModelConfig {
+  id                         String   @id @default("active_config")
+  modelVersion               String   @default("v1.0")
+  baselineCarEmissionKgPerKm Float    @default(0.180)
+  baselineCarOccupancy       Float    @default(1.15)
+  shuttleSedanKgPerKm        Float    @default(0.180)
+  shuttleSuvKgPerKm          Float    @default(0.220)
+  shuttleVanKgPerKm          Float    @default(0.260)
+  shuttleMiniBusKgPerKm      Float    @default(0.320)
+  workingDaysPerMonth        Int      @default(22)
+  tripsPerWorkingDay         Int      @default(2)
+  updatedBy                  String   @default("SYSTEM")
+  updatedAt                  DateTime @updatedAt
+  createdAt                  DateTime @default(now())
+}
+
+model SustainabilityRecord {
+  id                   String   @id @default(cuid())
+  commuterId           String?
+  routeId              String?
+  tripId               String?
+  date                 String   // YYYY-MM-DD
+  month                String   // YYYY-MM
+  distanceKm           Float
+  passengerCount       Int      @default(1)
+  baselineEmissionsKg  Float
+  allocatedEmissionsKg Float
+  avoidedCo2Kg         Float
+  carsAvoidedCount     Float
+  modelVersion         String   @default("v1.0")
+  createdAt            DateTime @default(now())
+
+  @@index([commuterId])
+  @@index([routeId])
+  @@index([month])
+  @@index([date])
+}
+
+model GamificationProfile {
+  id                 String            @id @default(cuid())
+  userId             String            @unique
+  user               User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  totalXP            Int               @default(0)
+  currentStreak      Int               @default(0)
+  bestStreak         Int               @default(0)
+  showOnLeaderboard  Boolean           @default(true)
+  privacyDisplayName String            @default("ANONYMOUS") // REAL_NAME, INITIALS, ANONYMOUS
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
+
+  achievements       UserAchievement[]
+  xpEvents           XPEvent[]
+
+  @@index([totalXP])
+}
+
+model Achievement {
+  id            String            @id
+  name          String
+  description   String
+  icon          String            // Leaf, Clock, Award, ShieldCheck, etc.
+  category      String            // SUSTAINABILITY, CONSISTENCY, RELIABILITY, SAFETY, MILESTONE
+  metric        String            // COMPLETED_TRIPS, ON_TIME_RATE, CO2_SAVED_KG, OTP_BOARDINGS, CONSECUTIVE_STREAK, COMMUTE_DAYS
+  threshold     Float
+  minSampleSize Int               @default(0)
+  xpReward      Int
+  active        Boolean           @default(true)
+  createdAt     DateTime          @default(now())
+
+  userAchievements UserAchievement[]
+}
+
+model UserAchievement {
+  id              String              @id @default(cuid())
+  profileId       String
+  profile         GamificationProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  achievementId   String
+  achievement     Achievement         @relation(fields: [achievementId], references: [id], onDelete: Cascade)
+  currentProgress Float               @default(0)
+  isUnlocked      Boolean             @default(false)
+  unlockedAt      DateTime?
+  notified        Boolean             @default(false)
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  @@unique([profileId, achievementId])
+  @@index([profileId])
+  @@index([achievementId])
+}
+
+model XPEvent {
+  id             String              @id @default(cuid())
+  profileId      String
+  profile        GamificationProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  idempotencyKey String              @unique // userId:eventType:sourceId
+  eventType      String              // COMPLETED_TRIP, OTP_BOARDING, ON_TIME_BOARDING, MONTHLY_CONSISTENCY, SUSTAINABILITY_MILESTONE, ACHIEVEMENT_UNLOCKED
+  points         Int
+  sourceId       String?
+  month          String              // YYYY-MM
+  description    String
+  createdAt      DateTime            @default(now())
+
+  @@index([profileId])
+  @@index([month])
+  @@index([eventType])
+}
+
+model SecurityIncident {
+  id             String          @id @default(cuid())
+  incidentNumber String          @unique // e.g. "INC-1042"
+  title          String
+  severity       String          // LOW, MEDIUM, HIGH, CRITICAL
+  status         String          @default("OPEN") // OPEN, INVESTIGATING, RESOLVED
+  summary        String
+  resolvedAt     DateTime?
+  resolvedBy     String?
+  resolutionNote String?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  events         SecurityEvent[]
+
+  @@index([status])
+  @@index([severity])
+}
+
+model SecurityEvent {
+  id             String            @id @default(cuid())
+  incidentId     String?
+  incident       SecurityIncident? @relation(fields: [incidentId], references: [id], onDelete: SetNull)
+  eventType      String            // AUTH_LOGIN_FAILURE, RBAC_ACCESS_DENIED, etc.
+  severity       String            // LOW, MEDIUM, HIGH, CRITICAL
+  actorUserId    String?
+  actorRole      String?           // COMMUTER, DRIVER, ADMIN, SYSTEM, GUEST
+  ipAddress      String?
+  userAgent      String?
+  resourceType   String?           // AUTH, OTP, ROUTE, TRIP, DRIVER, API, SYSTEM
+  resourceId     String?
+  action         String
+  result         String            // SUCCESS, DENIED, FAILED, DETECTED
+  metadata       String?           // Sanitized JSON string
+  status         String            @default("OPEN") // OPEN, INVESTIGATING, RESOLVED, DISMISSED
+  resolvedAt     DateTime?
+  resolvedBy     String?
+  resolutionNote String?
+  createdAt      DateTime          @default(now())
+
+  @@index([eventType])
+  @@index([severity])
+  @@index([status])
+  @@index([createdAt])
+  @@index([actorUserId])
+}
+
+model RouteRiskSnapshot {
+  id                    String   @id @default(cuid())
+  routeId               String
+  routeCode             String
+  routeName             String
+  riskScore             Int
+  riskLevel             String   // LOW, MEDIUM, HIGH, CRITICAL
+  emergencyPoints       Int      @default(0)
+  deviationPoints       Int      @default(0)
+  speedPoints           Int      @default(0)
+  stopGpsPoints         Int      @default(0)
+  compliancePoints      Int      @default(0)
+  complexityPoints      Int      @default(0)
+  totalEvents           Int      @default(0)
+  activeEmergencies     Int      @default(0)
+  activeDeviations      Int      @default(0)
+  activeSpeedAnomalies  Int      @default(0)
+  stopGpsEvents         Int      @default(0)
+  driverVerified        Boolean  @default(false)
+  vehicleApproved       Boolean  @default(false)
+  factorsJson           String?  // JSON string of factor breakdown
+  metricsJson           String?  // JSON string of metrics
+  evaluatedAt           DateTime @default(now())
+
+  @@index([routeId])
+  @@index([evaluatedAt])
+}
+
+model SafetyAlert {
+  id             String    @id @default(cuid())
+  routeId        String
+  routeCode      String
+  routeName      String
+  type           String    // CRITICAL_RISK, HIGH_RISK, RAPID_RISK_INCREASE, RISK_LEVEL_ESCALATION, ACTIVE_EMERGENCY, ACTIVE_ROUTE_DEVIATION, ACTIVE_SPEED_ANOMALY, COMPLIANCE_FAILURE, MULTI_FACTOR_DETERIORATION
+  severity       String    // CRITICAL, HIGH, MEDIUM, LOW
+  title          String
+  message        String
+  currentScore   Int
+  previousScore  Int?
+  scoreDelta     Int?
+  evidenceJson   String    // JSON stringified evidence object
+  status         String    @default("ACTIVE") // ACTIVE, RESOLVED
+  dedupKey       String?   // Deterministic deduplication key
+  triggeredAt    DateTime  @default(now())
+  resolvedAt     DateTime?
+  resolvedBy     String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([routeId])
+  @@index([severity])
+  @@index([status])
+  @@index([triggeredAt])
+  @@index([dedupKey])
+}
+
+model SafetyIncidentCase {
+  id                  String                   @id @default(cuid())
+  alertId             String
+  routeId             String
+  routeCode           String
+  routeName           String
+  title               String
+  description         String
+  severity            String                   // CRITICAL, HIGH, MEDIUM, LOW
+  status              String                   @default("OPEN") // OPEN, ACKNOWLEDGED, INVESTIGATING, MITIGATED, RESOLVED, CLOSED
+  assignedAdminId     String?
+  createdByAdminId    String
+  currentRiskScore    Int
+  previousRiskScore   Int?
+  scoreDelta          Int?
+  sourceAlertType     String
+  sourceAlertSeverity String
+  evidenceJson        String                   // JSON string of snapshot & alert evidence
+  resolutionSummary   String?
+  createdAt           DateTime                 @default(now())
+  updatedAt           DateTime                 @updatedAt
+  resolvedAt          DateTime?
+  closedAt            DateTime?
+
+  activities          SafetyIncidentActivity[]
+
+  @@index([alertId])
+  @@index([routeId])
+  @@index([status])
+  @@index([severity])
+  @@index([assignedAdminId])
+  @@index([createdAt])
+}
+
+model SafetyIncidentActivity {
+  id           String             @id @default(cuid())
+  caseId       String
+  incidentCase SafetyIncidentCase @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  actionType   String             // CASE_CREATED, CASE_ACKNOWLEDGED, CASE_ASSIGNED, INVESTIGATION_STARTED, NOTE_ADDED, MITIGATION_RECORDED, CASE_RESOLVED, CASE_CLOSED, CASE_REOPENED
+  message      String
+  metadataJson String?            // JSON string of action metadata
+  performedBy  String             // Admin ID or Name
+  createdAt    DateTime           @default(now())
+
+  @@index([caseId])
+  @@index([actionType])
+  @@index([createdAt])
+}
+
+model OperationalRecommendation {
+  id                  String    @id @default(cuid())
+  routeId             String
+  routeCode           String
+  routeName           String
+  type                String    // CRITICAL_SAFETY_REVIEW, HIGH_RISK_REVIEW, RISK_DETERIORATION_REVIEW, EMERGENCY_RESPONSE_REVIEW, ROUTE_DEVIATION_REVIEW, SPEED_ANOMALY_REVIEW, DRIVER_COMPLIANCE_REVIEW, VEHICLE_COMPLIANCE_REVIEW, CAPACITY_REVIEW, DEMAND_MONITORING, MULTI_FACTOR_REVIEW, INCIDENT_REVIEW, RISING_RISK_MONITORING
+  priority            String    // CRITICAL, HIGH, MEDIUM, LOW
+  title               String
+  recommendation      String
+  rationale           String
+  evidenceJson        String    // JSON stringified evidence object
+  status              String    @default("PENDING") // PENDING, APPROVED, DISMISSED, COMPLETED
+  dedupKey            String?   // Deterministic deduplication key
+  sourceSnapshotId    String?
+  sourceDecisionState String?
+  approvedAt          DateTime?
+  approvedBy          String?
+  dismissedAt         DateTime?
+  dismissedBy         String?
+  completedAt         DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  @@index([routeId])
+  @@index([priority])
+  @@index([status])
+  @@index([createdAt])
+  @@index([dedupKey])
+}
+
+model OperationalAuditEvent {
+  id                  String   @id @default(cuid())
+  eventType           String   // Controlled event types (e.g. RECOMMENDATION_APPROVED, etc.)
+  actorUserId         String
+  actorRole           String   @default("ADMIN")
+  actorEmail          String?
+  actorName           String?
+  routeId             String?
+  routeCode           String?
+  routeName           String?
+  resourceType        String   // RECOMMENDATION, SAFETY_ALERT, INCIDENT_CASE, DECISION_SUPPORT, ROUTE_RISK, AUDIT_LOG
+  resourceId          String?
+  action              String
+  description         String
+  previousStateJson   String?  // Sanitized previous state JSON
+  resultingStateJson  String?  // Sanitized resulting state JSON
+  evidenceJson        String?  // Sanitized evidence JSON
+  sourceModule        String   // RECOMMENDATIONS, SAFETY_ALERTS, INCIDENTS, DECISION_SUPPORT, ROUTE_RISK, AUDIT
+  correlationId       String?
+  requestId           String?
+  ipAddress           String?
+  userAgent           String?
+  integrityHash       String   // SHA-256 fingerprint
+  previousEventHash   String?  // Cryptographic audit chain link
+  createdAt           DateTime @default(now())
+
+  @@index([actorUserId])
+  @@index([eventType])
+  @@index([routeId])
+  @@index([resourceType])
+  @@index([resourceId])
+  @@index([createdAt])
+  @@index([correlationId])
+  @@index([sourceModule])
+}
+
+model OperationalActionPlan {
+  id                             String    @id @default(cuid())
+  routeId                        String
+  routeCode                      String
+  routeName                      String
+  recommendationId               String
+  actionType                     String    // REVIEW_ROUTE, REVIEW_CAPACITY, REVIEW_DRIVER, REVIEW_SAFETY_ALERT, REVIEW_INCIDENT, REVIEW_SCHEDULE, REVIEW_DEMAND, CONDUCT_SUPERVISOR_REVIEW, PREPARE_CONTINGENCY_PLAN, ESCALATE_TO_OPERATIONS
+  title                          String
+  description                    String
+  priority                       String    // CRITICAL, HIGH, MEDIUM, LOW
+  status                         String    @default("PENDING_APPROVAL") // DRAFT, PENDING_APPROVAL, APPROVED, EXECUTION_REQUESTED, IN_PROGRESS, COMPLETED, FAILED, CANCELLED, REJECTED
+  requestedByUserId              String
+  requestedByUserName            String?
+  approvedByUserId               String?
+  approvedByUserName             String?
+  executedByUserId               String?
+  executedByUserName             String?
+  createdAt                      DateTime  @default(now())
+  updatedAt                      DateTime  @updatedAt
+  approvedAt                     DateTime?
+  executionStartedAt             DateTime?
+  completedAt                    DateTime?
+  cancelledAt                    DateTime?
+  rejectedAt                     DateTime?
+  executionResult                String?
+  failureReason                  String?
+  evidenceJson                   String    // JSON string of snapshot & recommendation evidence
+  approvalNote                   String?
+  executionNote                  String?
+  rejectionReason                String?
+  cancellationReason             String?
+  correlationId                  String?
+  sourceModule                   String    @default("ACTION_WORKFLOW")
+  createdFromRiskScore           Int?
+  createdFromOperationalStatus   String?
+  dedupKey                       String?   // routeId:recommendationId:actionType:statusGroup
+
+  @@index([routeId])
+  @@index([recommendationId])
+  @@index([status])
+  @@index([priority])
+  @@index([actionType])
+  @@index([dedupKey])
+  @@index([createdAt])
+}
+
+

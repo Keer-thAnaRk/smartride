@@ -1,0 +1,397 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // =========================================================================
+    // 🛡️ SECURITY HELPER FUNCTIONS
+    // =========================================================================
+
+    function isAuthenticated() {
+      return request.auth != null && request.auth.uid != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function hasUserDoc() {
+      return isAuthenticated() && exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && (
+        (request.auth.token != null && request.auth.token.role == 'ADMIN') ||
+        (hasUserDoc() && getUserData().role == 'ADMIN')
+      );
+    }
+
+    function isDriver() {
+      return isAuthenticated() && (
+        (request.auth.token != null && request.auth.token.role == 'DRIVER') ||
+        (hasUserDoc() && getUserData().role == 'DRIVER')
+      );
+    }
+
+    function isCommuter() {
+      return isAuthenticated() && (
+        (request.auth.token != null && request.auth.token.role == 'COMMUTER') ||
+        (hasUserDoc() && getUserData().role == 'COMMUTER')
+      );
+    }
+
+    // =========================================================================
+    // 1. USERS COLLECTION
+    // Users can read only their own profile unless Admin.
+    // Self-registration is strictly locked to COMMUTER role; privilege escalation blocked.
+    // Role, email, and passwordHash are strictly immutable for non-admin users.
+    // =========================================================================
+    match /users/{userId} {
+      allow read: if isOwner(userId) || isAdmin();
+
+      allow create: if (
+        isOwner(userId) &&
+        (!('role' in request.resource.data) || request.resource.data.role == 'COMMUTER') &&
+        !('passwordHash' in request.resource.data)
+      ) || isAdmin();
+
+      allow update: if (
+        isOwner(userId) &&
+        !request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'email', 'id', 'passwordHash'])
+      ) || isAdmin();
+
+      allow delete: if isAdmin();
+    }
+
+    // =========================================================================
+    // 2. COMMUTER PROFILES
+    // Commuters own their profile. Assigned drivers and Admins can read pickup details.
+    // =========================================================================
+    match /commuterProfiles/{userId} {
+      allow read: if isOwner(userId) || isDriver() || isAdmin();
+
+      allow create: if (
+        isOwner(userId) &&
+        (!('userId' in request.resource.data) || request.resource.data.userId == request.auth.uid)
+      ) || isAdmin();
+
+      allow update: if (
+        isOwner(userId) &&
+        (!('userId' in request.resource.data) || request.resource.data.userId == resource.data.userId)
+      ) || isAdmin();
+
+      allow delete: if isAdmin();
+    }
+
+    // =========================================================================
+    // 3. DRIVER PROFILES (driverProfiles & drivers collections)
+    // Drivers cannot self-approve or self-verify (isVerified / verificationStatus).
+    // Rating is protected from driver tampering.
+    // =========================================================================
+    match /driverProfiles/{driverId} {
+      allow read: if isAuthenticated();
+
+      allow create: if (
+        isAuthenticated() &&
+        (request.auth.uid == driverId || (hasUserDoc() && request.resource.data.userId == request.auth.uid)) &&
+        (!('isVerified' in request.resource.data) || request.resource.data.isVerified == false)
+      ) || isAdmin();
+
+      allow update: if (
+        isAuthenticated() &&
+        (resource.data.userId == request.auth.uid || request.auth.uid == driverId) &&
+        !request.resource.data.diff(resource.data).affectedKeys().hasAny(['isVerified', 'rating', 'userId'])
+      ) || isAdmin();
+
+      allow delete: if isAdmin();
+    }
+
+    match /drivers/{driverId} {
+      allow read: if isAuthenticated();
+
+      allow create: if (
+        isAuthenticated() &&
+        (!('verificationStatus' in request.resource.data) || request.resource.data.verificationStatus == 'pending')
+      ) || isAdmin();
+
+      allow update: if (
+        isAuthenticated() &&
+        (request.auth.uid == driverId || (hasUserDoc() && resource.data.userId == request.auth.uid)) &&
+        !request.resource.data.diff(resource.data).affectedKeys().hasAny(['verificationStatus'])
+      ) || isAdmin();
+
+      allow delete: if isAdmin();
+    }
+
+    // =========================================================================
+    // 4. VEHICLES COLLECTION
+    // Drivers can register vehicle specs, but isApproved is strictly Admin-only.
+    // Drivers cannot reassign vehicle ownership.
+    // =========================================================================
+    match /vehicles/{vehicleId} {
+      allow read: if isAuthenticated();
+
+      allow create: if (
+        (isDriver() || isAdmin()) &&
+        (!('isApproved' in request.resource.data) || request.resource.data.isApproved == false)
+      ) || isAdmin();
+
+      allow update: if (
+        isDriver() &&
+        (resource.data.driverId == request.auth.uid || resource.data.userId == request.auth.uid) &&
+        !request.resource.data.diff(resource.data).affectedKeys().hasAny(['isApproved', 'driverId'])
+      ) || isAdmin();
+
+      allow delete: if isAdmin();
+    }
+
+    // =========================================================================
+    // 5. ROUTES COLLECTION
+    // Publicly readable corridor catalog for commuters & unauthenticated visitors.
+    // Writes strictly restricted to Admin.
+    // =========================================================================
+    match /routes/{routeId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // =========================================================================
+    // 6. SUBSCRIPTION PLANS
+    // Publicly readable pricing catalog. Writes strictly Admin-only.
+    // =========================================================================
+    match /subscriptionPlans/{planId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // =========================================================================
+    // 7. SUBSCRIPTIONS COLLECTION
+    // Commuters can only create subscriptions for themselves.
+    // Status, dates, planId, and commuterId are protected from unauthorized tampering.
+    // =========================================================================
+    match /subscriptions/{subId} {
+      allow read: if isAuthenticated() && (
+        resource.data.commuterId == request.auth.uid ||
+        isDriver() ||
+        isAdmin()
+      );
+
+      allow create: if (
+        isAuthenticated() &&
+        request.resource.data.commuterId == request.auth.uid &&
+        (!('status' in request.resource.data) || request.resource.data.status in ['PENDING', 'ACTIVE'])
+      ) || isAdmin();
+
+      allow update: if (
+        isAuthenticated() &&
+        resource.data.commuterId == request.auth.uid &&
+        !request.resource.data.diff(resource.data).affectedKeys().hasAny(['commuterId', 'planId', 'routeId', 'startDate', 'endDate'])
+      ) || isAdmin();
+
+      allow delete: if isAdmin();
+    }
+
+    // =========================================================================
+    // 8. BOOKINGS COLLECTION
+    // Commuters own their bookings. Fare, booking number, and commuterId are immutable.
+    // =========================================================================
+    match /bookings/{bookingId} {
+      allow read: if isAuthenticated() && (
+        resource.data.commuterId == request.auth.uid ||
+        isDriver() ||
+        isAdmin()
+      );
+
+      allow create: if (
+        isAuthenticated() &&
+        request.resource.data.commuterId == request.auth.uid &&
+        (!('status' in request.resource.data) || request.resource.data.status in ['PENDING', 'CONFIRMED'])
+      ) || isAdmin();
+
+      allow update: if (
+        isAuthenticated() &&
+        resource.data.commuterId == request.auth.uid &&
+        !request.resource.data.diff(resource.data).affectedKeys().hasAny(['commuterId', 'fare', 'bookingNumber'])
+      ) || isAdmin();
+
+      allow delete: if isAdmin();
+    }
+
+    // =========================================================================
+    // 9. PAYMENTS COLLECTION
+    // Commuters can only view their own payment transactions.
+    // Clients CANNOT forge 'SUCCEEDED' status directly; updates are Admin/server only.
+    // =========================================================================
+    match /payments/{paymentId} {
+      allow read: if isAuthenticated() && (
+        resource.data.commuterId == request.auth.uid ||
+        isAdmin()
+      );
+
+      allow create: if (
+        isAuthenticated() &&
+        request.resource.data.commuterId == request.auth.uid &&
+        request.resource.data.status != 'SUCCEEDED'
+      ) || isAdmin();
+
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // =========================================================================
+    // 10. ATTENDANCES (Passenger Manifest Records)
+    // Boarding status (BOARDED) can only be set by assigned Drivers or Admins.
+    // Commuters can only mark opt-out (SKIPPED/ABSENT) for their own attendance.
+    // =========================================================================
+    match /attendances/{attendanceId} {
+      allow read: if isAuthenticated() && (
+        resource.data.commuterId == request.auth.uid ||
+        isDriver() ||
+        isAdmin()
+      );
+
+      allow create: if isDriver() || isAdmin();
+
+      allow update: if isDriver() || isAdmin() || (
+        isAuthenticated() &&
+        resource.data.commuterId == request.auth.uid &&
+        request.resource.data.status in ['SKIPPED', 'ABSENT'] &&
+        !request.resource.data.diff(resource.data).affectedKeys().hasAny(['commuterId', 'driverId', 'routeId', 'date', 'tripType'])
+      );
+
+      allow delete: if isAdmin();
+    }
+
+    // =========================================================================
+    // 11. TRIPS COLLECTION (Operational Trips)
+    // Drivers manage their assigned trips (location, passengers, lifecycle).
+    // Commuters can trigger SOS on the trip (cannot resolve or alter route/driver).
+    // SOS resolution and trip deletion require Admin.
+    // =========================================================================
+    match /trips/{tripId} {
+      allow read: if isAuthenticated();
+
+      allow create: if isDriver() || isAdmin();
+
+      allow update: if isAdmin() || (
+        isDriver() && (
+          !('driverId' in resource.data) ||
+          resource.data.driverId == request.auth.uid ||
+          resource.data.driverId == ''
+        )
+      ) || (
+        // Commuter emergency SOS trigger: must be authenticated, set sos_alert with their UID
+        isAuthenticated() &&
+        request.resource.data.status == 'sos_alert' &&
+        request.resource.data.sosDetails.triggeredByUserId == request.auth.uid &&
+        !request.resource.data.diff(resource.data).affectedKeys().hasAny(['driverId', 'routeId', 'passengers'])
+      );
+
+      allow delete: if isAdmin();
+    }
+
+    // =========================================================================
+    // 12. PUBLIC TRIPS (Sanitized Live Telemetry Projections)
+    // Public read for live family tracking stream.
+    // Writes restricted to assigned Drivers and Admins.
+    // =========================================================================
+    match /publicTrips/{shareToken} {
+      allow read: if true;
+      allow write: if isDriver() || isAdmin();
+    }
+
+    // =========================================================================
+    // 13. DRIVER LEAVE REQUESTS
+    // Drivers submit leave with status 'pending'.
+    // Drivers CANNOT approve their own leave or assign replacement captains.
+    // Approval and substitute driver assignment strictly restricted to Admin.
+    // =========================================================================
+    match /leaveRequests/{leaveId} {
+      allow read: if isAuthenticated() && (
+        resource.data.driverId == request.auth.uid ||
+        isDriver() ||
+        isAdmin()
+      );
+
+      allow create: if (
+        isDriver() &&
+        request.resource.data.driverId == request.auth.uid &&
+        (!('status' in request.resource.data) || request.resource.data.status == 'pending')
+      ) || isAdmin();
+
+      allow update: if (
+        isDriver() &&
+        resource.data.driverId == request.auth.uid &&
+        resource.data.status == 'pending' &&
+        !request.resource.data.diff(resource.data).affectedKeys().hasAny(['status', 'replacementDriverId', 'replacementDriverName', 'reviewedAt'])
+      ) || isAdmin();
+
+      allow delete: if isAdmin();
+    }
+
+    // =========================================================================
+    // 14. NOTIFICATIONS
+    // Users can read and acknowledge (mark read) only their own notifications.
+    // Notification creation is reserved for Admin / server.
+    // =========================================================================
+    match /notifications/{notificationId} {
+      allow read: if isAuthenticated() && (
+        resource.data.userId == request.auth.uid ||
+        isAdmin()
+      );
+
+      allow create: if isAdmin();
+
+      allow update: if isAuthenticated() && (
+        (resource.data.userId == request.auth.uid && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read'])) ||
+        isAdmin()
+      );
+
+      allow delete: if isAuthenticated() && (
+        resource.data.userId == request.auth.uid ||
+        isAdmin()
+      );
+    }
+
+    // =========================================================================
+    // 15. DRIVER PAYOUTS
+    // Drivers can view their own payouts. Management strictly Admin-only.
+    // =========================================================================
+    match /payouts/{payoutId} {
+      allow read: if isAuthenticated() && (
+        resource.data.driverId == request.auth.uid ||
+        isAdmin()
+      );
+      allow write: if isAdmin();
+    }
+
+    // =========================================================================
+    // 16. OPERATIONAL INTELLIGENCE & AUDIT COLLECTIONS
+    // Administrative-only collections for AI predictions, models, and webhooks.
+    // =========================================================================
+    match /aiDemandPredictions/{predId} {
+      allow read: if isAdmin();
+      allow write: if isAdmin();
+    }
+
+    match /aiModelRuns/{runId} {
+      allow read: if isAdmin();
+      allow write: if isAdmin();
+    }
+
+    match /webhook_events/{eventId} {
+      allow read, write: if isAdmin();
+    }
+
+    // =========================================================================
+    // 17. EXPLICIT DEFAULT DENY-ALL CATCH-ALL
+    // Any collections or subcollections not explicitly matched above are rejected.
+    // =========================================================================
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

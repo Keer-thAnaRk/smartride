@@ -1,0 +1,46 @@
+# Dependencies
+/node_modules
+/.pnp
+.pnp.js
+
+# Next.js build
+/.next/
+/out/
+
+# Environment files
+.env*.local
+.env.local
+.env
+*serviceAccount*.json
+serviceAccountKey.json
+firebase-service-account.json
+
+# SQLite local database
+prisma/*.db
+prisma/*.db-journal
+*.db
+*.db-journal
+*.db.bak
+*.db-journal.bak
+
+# Debug logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS Files
+.DS_Store
+Thumbs.db
+
+# Local audit and verification files
+/scratch/
+
+# Local build/cache files
+*.tsbuildinfo
+
+# Local runtime/test data
+prisma/revocations.json
+
+# Local uploaded/test avatars
+/public/uploads/avatars/*
+!/public/uploads/avatars/.gitkeep
